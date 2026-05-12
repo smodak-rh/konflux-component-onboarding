@@ -24,7 +24,7 @@ own registry file, so two people pushing at the same time never conflict.
   python3 compare_runs.py --all                    # reads all registry_*.csv
   git add results/reports/ && git commit && git push   # share the report
 
-Config file (JSON) - set once per user, never pass flags again:
+Config file (JSON)  set once per user, never pass flags again:
   ~/.konflux_test.json  or  ./pipeline_test_config.json  (local wins over global)
 
   {
@@ -62,7 +62,7 @@ import sys
 import time
 from pathlib import Path
 
-# ?? Schema version - bump when adding/removing registry columns ???????????????
+# ?? Schema version  bump when adding/removing registry columns ???????????????
 SCHEMA_VERSION = "1.1"
 
 # ?? Defaults ??????????????????????????????????????????????????????????????????
@@ -119,6 +119,7 @@ def resolve_config(args) -> dict:
         "user_id":       pick(args.user_id,       "user_id",       os.environ.get("USER", "user")),
         "oc_context":    pick(args.oc_context,    "oc_context",    DEFAULT_OC_CONTEXT),
         "ns_pattern":    pick(args.ns_pattern,    "ns_pattern",    DEFAULT_NS_PATTERN),
+        "ns_template":   pick(None,               "ns_template",   None),
         "app_label":     pick(args.app_label,     "app_label",     DEFAULT_APP_LABEL),
         "poll_interval": pick(args.poll_interval, "poll_interval", DEFAULT_POLL_SEC),
         "timeout":       pick(args.timeout,       "timeout",       DEFAULT_TIMEOUT_SEC),
@@ -173,47 +174,15 @@ def parse_args():
     p.add_argument("--dry-run",      action="store_true",
                    help="Validate cluster and print plan, but do NOT trigger or extract")
     p.add_argument("--skip-trigger", action="store_true",
-                   help="Skip ansible-playbook trigger; watch+extract only. "
-                        "Looks back 2 hours for already-running/completed runs. "
-                        "Exits early if no runs found after 5 consecutive empty polls.")
+                   help="Skip ansible-playbook; just watch+extract")
     return p.parse_args()
 
 
 # ?? Utilities ??????????????????????????????????????????????????????????????????
 
-_last_was_progress = False
-
-
 def log(msg: str, level: str = "INFO"):
-    global _last_was_progress
-    if _last_was_progress:
-        print(flush=True)
-        _last_was_progress = False
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
     print(f"[{ts} UTC] [{level}] {msg}", flush=True)
-
-
-def progress(msg: str):
-    global _last_was_progress
-    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
-    line = f"[{ts} UTC] [INFO] {msg}"
-    if sys.stdout.isatty():
-        try:
-            import shutil as _sh
-            width = _sh.get_terminal_size(fallback=(160, 40)).columns
-        except Exception:
-            width = 160
-        print(f"\r{line[:width-1].ljust(width-1)}", end="", flush=True)
-        _last_was_progress = True
-    else:
-        print(line, flush=True)
-
-
-def progress_done():
-    global _last_was_progress
-    if _last_was_progress:
-        print(flush=True)
-        _last_was_progress = False
 
 
 def utcnow() -> datetime.datetime:
@@ -296,7 +265,7 @@ def validate_cluster(context: str) -> bool:
     if r2.returncode != 0:
         log(f"Cannot list namespaces: {r2.stderr.strip()}", "ERROR")
         return False
-    log(f"Cluster reachable - {len(r2.stdout.strip().splitlines())} namespaces visible")
+    log(f"Cluster reachable  {len(r2.stdout.strip().splitlines())} namespaces visible")
     return True
 
 
@@ -316,7 +285,7 @@ def trigger_builds(starts_from: int, ends_to: int, scenario: str) -> datetime.da
     log(f"Trigger time (UTC): {trigger_time.strftime('%Y-%m-%dT%H:%M:%SZ')}")
     result = subprocess.run(cmd, text=True)
     if result.returncode != 0:
-        log("ansible-playbook exited non-zero - may have partially failed.", "WARN")
+        log("ansible-playbook exited non-zero  may have partially failed.", "WARN")
     else:
         log("ansible-playbook completed successfully")
     return trigger_time
@@ -324,22 +293,46 @@ def trigger_builds(starts_from: int, ends_to: int, scenario: str) -> datetime.da
 
 # ?? Step 3: Watch pipeline runs ????????????????????????????????????????????????
 
-def fetch_pipeline_runs(context, ns_pattern, app_label, since) -> list:
-    r = run_oc(["get", "pipelinerun", "--all-namespaces", "-o", "json"], context)
-    if r.returncode != 0:
-        log(f"oc get pipelinerun failed: {r.stderr.strip()}", "WARN")
+def resolve_target_namespaces(context, ns_pattern,
+                              ns_template=None, starts_from=None, ends_to=None) -> list:
+    """Return the exact namespace list to watch.
+
+    Fast path: build list from ns_template + range (e.g. 'test-rhtap-{}-tenant' 1..10).
+    No cluster API call; no risk of matching thousands of unrelated namespaces.
+    Fallback: oc get namespaces filtered by ns_pattern regex.
+    """
+    if ns_template and starts_from is not None and ends_to is not None:
+        namespaces = [ns_template.format(i) for i in range(starts_from, ends_to + 1)]
+        log(f"Namespace list from template '{ns_template}' range {starts_from}..{ends_to}: "
+            f"{namespaces}")
+        return namespaces
+    r_ns = run_oc(["get", "namespaces", "--no-headers", "-o", "name"], context)
+    if r_ns.returncode != 0:
+        log(f"Cannot list namespaces: {r_ns.stderr.strip()}", "WARN")
         return []
-    try:
-        data = json.loads(r.stdout)
-    except json.JSONDecodeError:
-        log("Failed to parse pipelinerun JSON", "WARN")
-        return []
+    all_ns = [line.split("/")[-1] for line in r_ns.stdout.strip().splitlines() if line]
+    matched = [ns for ns in all_ns if re.search(ns_pattern, ns)]
+    log(f"Namespace list from cluster filter '{ns_pattern}': {matched}")
+    return matched
+
+
+def fetch_pipeline_runs(context, target_namespaces, app_label, since) -> list:
+    """Query pipelineruns per-namespace; avoids cluster-scoped RBAC requirement."""
+    items = []
+    for ns in target_namespaces:
+        r = run_oc(["get", "pipelinerun", "-n", ns, "-o", "json"], context)
+        if r.returncode != 0:
+            log(f"oc get pipelinerun -n {ns} failed: {r.stderr.strip()}", "WARN")
+            continue
+        try:
+            data = json.loads(r.stdout)
+        except json.JSONDecodeError:
+            log(f"Failed to parse pipelinerun JSON for namespace {ns}", "WARN")
+            continue
+        items.extend(data.get("items", []))
 
     matching = []
-    for pr in data.get("items", []):
-        ns = pr["metadata"]["namespace"]
-        if not re.search(ns_pattern, ns):
-            continue
+    for pr in items:
         labels = pr["metadata"].get("labels", {})
         if app_label and labels.get("appstudio.openshift.io/application") != app_label:
             continue
@@ -351,70 +344,59 @@ def fetch_pipeline_runs(context, ns_pattern, app_label, since) -> list:
 
 
 def watch_pipeline_runs(context, ns_pattern, app_label, trigger_time,
-                        expected, poll_sec, timeout_sec) -> list:
-    """
-    Poll until all expected runs reach a terminal state.
-
-    GC-resilience: seen_runs cache ensures a run is never dropped once
-    observed, even if Konflux prunes it between polls.
-
-    Early-exit: if no runs have appeared after MAX_EMPTY_POLLS consecutive
-    empty polls we assume GC beat us and bail out rather than waiting for
-    the full timeout.
-    """
-    MAX_EMPTY_POLLS = 5
-    empty_polls = 0
-
-    log(f"Watching for {expected} pipeline run(s) -- poll every {poll_sec}s "
+                        expected, poll_sec, timeout_sec,
+                        ns_template=None, starts_from=None, ends_to=None) -> list:
+    log(f"Watching for {expected} pipeline run(s) - poll every {poll_sec}s "
         f"(timeout {timeout_sec // 60}m)")
-    start = time.time()
 
-    # key: "<namespace>/<name>"  value: latest pipelinerun dict
-    # Entries are never removed -- survives PAC GC pruning between polls.
-    seen_runs: dict = {}
+    # Resolve namespaces ONCE; reuse the cached list on every poll cycle.
+    target_namespaces = resolve_target_namespaces(
+        context, ns_pattern,
+        ns_template=ns_template, starts_from=starts_from, ends_to=ends_to,
+    )
+    if not target_namespaces:
+        log("No namespaces matched. Cannot watch.", "ERROR")
+        return []
+    log(f"Watching {len(target_namespaces)} namespace(s): "
+        f"{' '.join(sorted(target_namespaces))}")
+
+    start = time.time()
+    seen_runs: dict = {}   # key -> last known PR; resilient to Konflux GC
+    empty_polls = 0
 
     while True:
         elapsed = int(time.time() - start)
-        current = fetch_pipeline_runs(context, ns_pattern, app_label, trigger_time)
+        fresh = fetch_pipeline_runs(context, target_namespaces, app_label, trigger_time)
 
-        for pr in current:
-            key = f"{pr['metadata']['namespace']}/{pr['metadata']['name']}"
+        # Merge fresh results into seen_runs so GC'd runs are not lost
+        for pr in fresh:
+            key = pr["metadata"]["namespace"] + "/" + pr["metadata"]["name"]
             seen_runs[key] = pr
 
-        if not seen_runs:
+        all_runs = list(seen_runs.values())
+        terminal = [r for r in all_runs if classify_run(r) in TERMINAL_STATES]
+        succ = sum(1 for r in terminal if classify_run(r) == "Succeeded")
+        fail = len(terminal) - succ
+
+        if not all_runs:
             empty_polls += 1
-            if empty_polls >= MAX_EMPTY_POLLS:
-                progress_done()
-                log(f"No pipeline runs found after {empty_polls} polls "
-                    f"({empty_polls * poll_sec}s). Runs may have been "
-                    f"GC-ed before collection. Exiting.", "WARN")
+            if empty_polls >= 5:
+                log("No pipeline runs found after 5 consecutive polls. "
+                    "Check that builds were triggered. Exiting.", "WARN")
                 return []
         else:
             empty_polls = 0
 
-        all_runs = list(seen_runs.values())
-        terminal = [r for r in all_runs if classify_run(r) in TERMINAL_STATES]
-        running  = [r for r in all_runs if classify_run(r) not in TERMINAL_STATES]
-        succ = sum(1 for r in terminal if classify_run(r) == "Succeeded")
-        fail = len(terminal) - succ
-
-        gc_pruned = len(all_runs) - len(current)
-        gc_note = (f" [{gc_pruned} GC-pruned, held in cache]"
-                   if gc_pruned > 0 else "")
-
-        progress(f"Progress: {len(terminal)}/{expected} terminal "
-                 f"({succ} succeeded, {fail} failed, {len(running)} running)"
-                 f" -- {elapsed // 60}m{elapsed % 60:02d}s elapsed{gc_note}")
+        log(f"Progress: {len(terminal)}/{expected} terminal "
+            f"({succ} succeeded, {fail} failed, {len(all_runs)-len(terminal)} running) "
+            f"- {elapsed // 60}m{elapsed % 60:02d}s elapsed")
 
         if len(terminal) >= expected:
-            progress_done()
             log("All expected pipeline runs reached terminal state.")
             return all_runs
         if elapsed >= timeout_sec:
-            progress_done()
-            log(f"Timeout after {timeout_sec}s -- extracting partial results.", "WARN")
+            log(f"Timeout after {timeout_sec}s - extracting partial results.", "WARN")
             return all_runs
-
         time.sleep(poll_sec)
 
 
@@ -423,7 +405,7 @@ def watch_pipeline_runs(context, ns_pattern, app_label, trigger_time,
 def extract_results(runs: list, run_dir: Path, run_config: dict) -> dict:
     run_dir.mkdir(parents=True, exist_ok=True)
 
-    # Raw JSON (large - excluded from git via .gitignore)
+    # Raw JSON (large  excluded from git via .gitignore)
     (run_dir / "pipelineruns_raw.json").write_text(json.dumps({"items": runs}, indent=2))
 
     # Pipeline summary CSV
@@ -563,7 +545,7 @@ def extract_results(runs: list, run_dir: Path, run_config: dict) -> dict:
 # ?? Step 5: Update per-user registry ??????????????????????????????????????????
 
 def append_registry(run_config: dict, stats: dict, run_dir: Path, run_status: str) -> Path:
-    """Append to results/registry_<user_id>.csv - one file per user, no git conflicts."""
+    """Append to results/registry_<user_id>.csv  one file per user, no git conflicts."""
     RESULTS_DIR.mkdir(parents=True, exist_ok=True)
     registry_file = RESULTS_DIR / f"registry_{run_config['user_id']}.csv"
     row = {
@@ -590,7 +572,7 @@ def append_registry(run_config: dict, stats: dict, run_dir: Path, run_status: st
         "oc_context":           run_config.get("oc_context", ""),
         "ns_pattern":           run_config.get("ns_pattern", ""),
         "app_label":            run_config.get("app_label", ""),
-        "result_dir":           run_dir.name,   # relative path only - portable across machines
+        "result_dir":           run_dir.name,   # relative path only  portable across machines
         "run_status":           run_status,
     }
     write_header = not registry_file.exists()
@@ -634,7 +616,7 @@ def git_commit_and_push(run_config: dict, stats: dict, run_dir: Path,
         f"Assisted-by: CursorAI"
     )
 
-    # Stage only the relevant files (not raw JSON - .gitignore handles it)
+    # Stage only the relevant files (not raw JSON  .gitignore handles it)
     files_to_add = [
         str(registry_file.relative_to(repo_root)),
         str((run_dir / "run_config.json").relative_to(repo_root)),
@@ -674,7 +656,7 @@ def git_commit_and_push(run_config: dict, stats: dict, run_dir: Path,
         if push.returncode != 0:
             log(f"git push failed: {push.stderr.strip()}", "ERROR")
         else:
-            log("git push successful - colleagues can now `git pull` to see your results")
+            log("git push successful  colleagues can now `git pull` to see your results")
 
 
 # ?? Main ???????????????????????????????????????????????????????????????????????
@@ -725,12 +707,12 @@ def main():
     (run_dir / "run_config.json").write_text(json.dumps(run_config, indent=2))
 
     if args.dry_run:
-        log("DRY RUN - nothing triggered or extracted.")
+        log("DRY RUN  nothing triggered or extracted.")
         return
 
     # 1. Validate cluster
     if not validate_cluster(cfg["oc_context"]):
-        log("Aborting - cluster not reachable.", "ERROR")
+        log("Aborting  cluster not reachable.", "ERROR")
         sys.exit(1)
 
     trigger_time = utcnow()
@@ -756,6 +738,9 @@ def main():
         expected     = batch_size,
         poll_sec     = cfg["poll_interval"],
         timeout_sec  = cfg["timeout"],
+        ns_template  = cfg.get("ns_template"),
+        starts_from  = args.starts_from,
+        ends_to      = args.ends_to,
     )
     run_config["end_utc"] = utcnow_str()
     terminal   = sum(1 for r in runs if classify_run(r) in TERMINAL_STATES)

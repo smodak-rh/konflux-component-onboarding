@@ -4,7 +4,8 @@
   "user_id":      "YOUR_KERBEROS_ID",
   "oc_context":   "default/api-stone-stg-rh01-l2vh-p1-openshiftapps-com:6443/YOUR_USERNAME",
   "ns_pattern":   "test-rhtap-[0-9]+-tenant",
+  "ns_template":  "test-rhtap-{}-tenant",
   "app_label":    "example-packages",
-  "poll_interval": 30,
+  "poll_interval": 15,
   "timeout":       3600
 }

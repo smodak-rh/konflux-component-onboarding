@@ -6,7 +6,7 @@ Reads ALL results/registry_*.csv files (one per contributor, git-tracked) and
 produces:
   1. A terminal comparison table
   2. A self-contained Plotly HTML report ? results/reports/comparison_<ts>.html
-     (git-push this file to share with engineering - no server needed)
+     (git-push this file to share with engineering ù no server needed)
 
 Git-based collaboration model
 ------------------------------
@@ -46,7 +46,7 @@ from pathlib import Path
 RESULTS_DIR  = Path(__file__).parent / "results"
 REPORTS_DIR  = RESULTS_DIR / "reports"
 
-# All possible registry columns - missing ones filled with "" on load
+# All possible registry columns ù missing ones filled with "" on load
 ALL_FIELDS = [
     "run_id", "schema_version", "user_id",
     "batch_size", "starts_from", "ends_to", "test_scenario",
@@ -99,7 +99,7 @@ def parse_utc(ts: str) -> datetime | None:
 def normalise_row(row: dict, source_user: str) -> dict:
     """
     Fill missing columns (schema evolution) and fix legacy field names.
-    result_dir is stored as a relative path in the registry - resolve it
+    result_dir is stored as a relative path in the registry ù resolve it
     against RESULTS_DIR so pipeline_summary.csv can always be found.
     """
     out = {f: row.get(f, "") for f in ALL_FIELDS}
@@ -117,15 +117,15 @@ def normalise_row(row: dict, source_user: str) -> dict:
             out["_result_path"] = str(candidate)
         else:
             out["_result_path"] = rel   # absolute path from old schema
-    # Sort key - UTC datetime or raw string
+    # Sort key ù UTC datetime or raw string
     out["_sort_key"] = parse_utc(out["start_utc"]) or out["start_utc"]
     return out
 
 
 def load_all_registries() -> list[dict]:
     """
-    Glob results/registry_*.csv - one file per contributor.
-    Merge into a single list sorted by start_utc (UTC - timezone-safe).
+    Glob results/registry_*.csv ù one file per contributor.
+    Merge into a single list sorted by start_utc (UTC ù timezone-safe).
     """
     registry_files = sorted(RESULTS_DIR.glob("registry_*.csv"))
     if not registry_files:
@@ -271,7 +271,7 @@ def build_html(runs: list[dict]) -> str:
                 "failure":   row.get("failure_msg", "")[:120],
             })
 
-    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
 
     chart_data     = json.dumps({
         "labels": labels, "users": users, "batches": batches,
@@ -347,8 +347,8 @@ input[type=text]{{background:#151b28;border:1px solid #2d3748;border-radius:5px;
 
 <h1>Konflux Pipeline Performance Report</h1>
 <p class="sub">
-  stone-stg-rh01 &nbsp; &nbsp; example-packages &nbsp; &nbsp; {now}
-  &nbsp; &nbsp; All timestamps in <strong>UTC</strong>
+  stone-stg-rh01 &nbsp;ù&nbsp; example-packages &nbsp;ù&nbsp; {now}
+  &nbsp;ù&nbsp; All timestamps in <strong>UTC</strong>
 </p>
 
 <div class="notice" id="notice"></div>
@@ -359,14 +359,14 @@ input[type=text]{{background:#151b28;border:1px solid #2d3748;border-radius:5px;
 <div class="grid2">
   <div class="card"><h2>Pass / Fail per Run</h2><div id="c-pf"></div></div>
   <div class="card"><h2>Success Rate (%)</h2><div id="c-rate"></div></div>
-  <div class="card full"><h2>Duration Breakdown - Min / P50 / Avg / P90 / Max (seconds)</h2><div id="c-dur"></div></div>
-  <div class="card full"><h2>Avg Duration Trend Over Time (UTC) - by Contributor</h2><div id="c-trend"></div></div>
+  <div class="card full"><h2>Duration Breakdown ù Min / P50 / Avg / P90 / Max (seconds)</h2><div id="c-dur"></div></div>
+  <div class="card full"><h2>Avg Duration Trend Over Time (UTC) ù by Contributor</h2><div id="c-trend"></div></div>
 </div>
 
 <div class="card grid1">
-  <h2>All Runs - Registry</h2>
+  <h2>All Runs ù Registry</h2>
   <div style="margin-bottom:10px">
-    <input type="text" id="run-filter" placeholder="Filter by run ID, user, date " oninput="filterTable()">
+    <input type="text" id="run-filter" placeholder="Filter by run ID, user, dateù" oninput="filterTable()">
   </div>
   <table>
     <thead><tr>
@@ -390,8 +390,8 @@ input[type=text]{{background:#151b28;border:1px solid #2d3748;border-radius:5px;
 </div>
 
 <div class="footer">
-  Data source: OpenShift PipelineRun resources &nbsp; &nbsp;
-  Captured by pipeline_orchestrator.py &nbsp; &nbsp; Compare by compare_runs.py &nbsp; &nbsp; {now}
+  Data source: OpenShift PipelineRun resources &nbsp;ù&nbsp;
+  Captured by pipeline_orchestrator.py &nbsp;ù&nbsp; Compare by compare_runs.py &nbsp;ù&nbsp; {now}
 </div>
 
 <script>
@@ -404,7 +404,7 @@ const CONTRIB = {contributors};
 document.getElementById("notice").innerHTML =
   `Comparing <strong>${{ROWS.length}}</strong> run(s) from
    <strong>${{CONTRIB.length}}</strong> contributor(s): ${{CONTRIB.join(", ")}}.
-   Runs ordered by <code>start_utc</code> - local timezones are normalized to UTC automatically.`;
+   Runs ordered by <code>start_utc</code> ù local timezones are normalized to UTC automatically.`;
 
 // ?? Contributor chips ???????????????????????????????????????????????
 CONTRIB.forEach(u => {{
@@ -444,24 +444,38 @@ const CFG = {{responsive:true}};
 
 // Pass/Fail
 Plotly.newPlot("c-pf",[
-  {{name:"Succeeded",x:D.labels,y:D.succeeded,type:"bar",marker:{{color:"#22c55e"}}}},
-  {{name:"Failed",   x:D.labels,y:D.failed,   type:"bar",marker:{{color:"#ef4444"}}}},
+  {{name:"Succeeded",x:D.labels,y:D.succeeded,type:"bar",marker:{{color:"#22c55e"}},
+    text:D.succeeded.map(v=>v>0?v:""),textposition:"auto",
+    textfont:{{color:"#fff",size:11,weight:700}}}},
+  {{name:"Failed",   x:D.labels,y:D.failed,   type:"bar",marker:{{color:"#ef4444"}},
+    text:D.failed.map(v=>v>0?v:""),textposition:"auto",
+    textfont:{{color:"#fff",size:11,weight:700}}}},
 ],{{...L,barmode:"stack",height:240}},CFG);
 
 // Success rate
 Plotly.newPlot("c-rate",[
-  {{x:D.labels,y:D.rates,type:"scatter",mode:"lines+markers",
-    line:{{color:"#3b82f6",width:2}},marker:{{color:"#3b82f6",size:7}},name:"Success %"}},
-],{{...L,height:240,yaxis:{{...L.yaxis,range:[0,100],ticksuffix:"%"}}}},CFG);
+  {{x:D.labels,y:D.rates,type:"scatter",mode:"lines+markers+text",
+    line:{{color:"#3b82f6",width:2}},marker:{{color:"#3b82f6",size:7}},name:"Success %",
+    text:D.rates.map(v=>v!=null?v.toFixed(1)+"%":""),
+    textposition:"top center",textfont:{{color:"#93c5fd",size:11,weight:700}}}},
+],{{...L,height:240,yaxis:{{...L.yaxis,range:[0,110],ticksuffix:"%"}}}},CFG);
 
-// Duration
+// Duration - helper to label bars as "Xm Ys"
+const durLabel = arr => arr.map(v => v==null ? "" : fmtS(v));
 Plotly.newPlot("c-dur",[
-  {{name:"Min",x:D.labels,y:D.min,type:"bar",marker:{{color:"#334155"}}}},
-  {{name:"P50",x:D.labels,y:D.p50,type:"bar",marker:{{color:"#3b82f6"}}}},
-  {{name:"Avg",x:D.labels,y:D.avg,type:"bar",marker:{{color:"#6366f1"}}}},
-  {{name:"P90",x:D.labels,y:D.p90,type:"bar",marker:{{color:"#f59e0b"}}}},
-  {{name:"Max",x:D.labels,y:D.max,type:"bar",marker:{{color:"#ef4444"}}}},
-],{{...L,barmode:"group",height:280,yaxis:{{...L.yaxis,ticksuffix:"s"}}}},CFG);
+  {{name:"Min",x:D.labels,y:D.min,type:"bar",marker:{{color:"#334155"}},
+    text:durLabel(D.min),textposition:"outside",textfont:{{color:"#94a3b8",size:10}}}},
+  {{name:"P50",x:D.labels,y:D.p50,type:"bar",marker:{{color:"#3b82f6"}},
+    text:durLabel(D.p50),textposition:"outside",textfont:{{color:"#93c5fd",size:10}}}},
+  {{name:"Avg",x:D.labels,y:D.avg,type:"bar",marker:{{color:"#6366f1"}},
+    text:durLabel(D.avg),textposition:"outside",textfont:{{color:"#a5b4fc",size:10}}}},
+  {{name:"P90",x:D.labels,y:D.p90,type:"bar",marker:{{color:"#f59e0b"}},
+    text:durLabel(D.p90),textposition:"outside",textfont:{{color:"#fcd34d",size:10}}}},
+  {{name:"Max",x:D.labels,y:D.max,type:"bar",marker:{{color:"#ef4444"}},
+    text:durLabel(D.max),textposition:"outside",textfont:{{color:"#fca5a5",size:10}}}},
+],{{...L,barmode:"group",height:320,
+    yaxis:{{...L.yaxis,ticksuffix:"s",autorange:true}},
+    margin:{{...L.margin,t:30}}}},CFG);
 
 // Trend per contributor
 const colors = ["#3b82f6","#22c55e","#f59e0b","#a855f7","#ef4444","#06b6d4"];
@@ -469,12 +483,14 @@ Plotly.newPlot("c-trend",
   CONTRIB.map((u,i) => {{
     const pts = ROWS.filter(r => r.user_id===u && r.avg);
     return {{
-      name:u, type:"scatter", mode:"lines+markers",
+      name:u, type:"scatter", mode:"lines+markers+text",
       x:pts.map(r=>r.start_utc), y:pts.map(r=>parseInt(r.avg)),
+      text:pts.map(r=>fmtS(parseInt(r.avg))),
+      textposition:"top center", textfont:{{color:colors[i%colors.length],size:10}},
       line:{{color:colors[i%colors.length],width:2}}, marker:{{size:7}},
     }};
   }}),
-  {{...L,height:240,yaxis:{{...L.yaxis,ticksuffix:"s"}},
+  {{...L,height:260,yaxis:{{...L.yaxis,ticksuffix:"s"}},
     xaxis:{{...L.xaxis,title:"Run start time (UTC)"}}}}, CFG);
 
 // ?? Registry table ??????????????????????????????????????????????????
@@ -508,7 +524,7 @@ if (PIPE.length > 0) {{
       <td style="font-size:10px">${{p.namespace}}</td>
       <td style="font-family:monospace;font-size:10px">${{p.pipeline}}</td>
       <td class="${{tone}}">${{p.status}}</td>
-      <td>${{p.dur_hms||"-"}}</td>
+      <td>${{p.dur_hms||"ù"}}</td>
       <td style="font-size:10px;color:#94a3b8">${{p.failure||""}}</td>
     </tr>`;
   }});
@@ -550,7 +566,7 @@ def main():
     if not args.no_html:
         html     = build_html(runs)
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        ts       = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
+        ts       = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
         out_path = REPORTS_DIR / f"comparison_{ts}.html"
         out_path.write_text(html, encoding="utf-8")
         print(f"\nHTML report ? {out_path}")
