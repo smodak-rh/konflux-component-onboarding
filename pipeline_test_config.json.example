@@ -1,0 +1,10 @@
+{
+  "_comment": "Copy this file to pipeline_test_config.json (repo-local) or ~/.konflux_test.json (user-global). CLI flags override these values.",
+
+  "user_id":      "YOUR_KERBEROS_ID",
+  "oc_context":   "default/api-stone-stg-rh01-l2vh-p1-openshiftapps-com:6443/YOUR_USERNAME",
+  "ns_pattern":   "test-rhtap-[0-9]+-tenant",
+  "app_label":    "example-packages",
+  "poll_interval": 30,
+  "timeout":       3600
+}

@@ -1,2 +1,23 @@
 /build-pipelines-workspace/
 /scratch-space
+
+# ── Pipeline test results ──────────────────────────────────────────────────────
+# Track: per-run CSVs, summaries, per-user registries, and HTML reports.
+# Exclude: raw JSON snapshots (can be 1–5 MB each; CSVs capture all needed data).
+
+# Exclude large raw snapshots — CSVs have everything needed for comparison.
+results/*/pipelineruns_raw.json
+
+# Include everything else under results/ explicitly:
+!results/
+!results/registry_*.csv
+!results/*/
+!results/*/run_config.json
+!results/*/run_summary.txt
+!results/*/pipeline_summary.csv
+!results/*/taskrun_detail.csv
+!results/reports/
+!results/reports/*.html
+
+# Local config file (contains personal oc-context and credentials path — do not commit).
+pipeline_test_config.json
