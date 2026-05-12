@@ -69,7 +69,7 @@ SCHEMA_VERSION = "1.1"
 DEFAULT_OC_CONTEXT  = "default/api-stone-stg-rh01-l2vh-p1-openshiftapps-com:6443/smodak"
 DEFAULT_NS_PATTERN  = r"test-rhtap-[0-9]+-tenant"
 DEFAULT_APP_LABEL   = "example-packages"
-DEFAULT_POLL_SEC    = 30
+DEFAULT_POLL_SEC    = 15
 DEFAULT_TIMEOUT_SEC = 3600
 
 RESULTS_DIR = Path(__file__).parent / "results"
@@ -160,7 +160,7 @@ def parse_args():
                    help="appstudio.openshift.io/application label to filter pipeline runs "
                         "(default: example-packages)")
     p.add_argument("--poll-interval", type=int, default=None,
-                   help="Seconds between status-check polls (default: 30)")
+                   help="Seconds between status-check polls (default: 15)")
     p.add_argument("--timeout",       type=int, default=None,
                    help="Max seconds to wait for all pipelines before extracting "
                         "partial results (default: 3600)")
@@ -173,15 +173,47 @@ def parse_args():
     p.add_argument("--dry-run",      action="store_true",
                    help="Validate cluster and print plan, but do NOT trigger or extract")
     p.add_argument("--skip-trigger", action="store_true",
-                   help="Skip ansible-playbook; just watch+extract")
+                   help="Skip ansible-playbook trigger; watch+extract only. "
+                        "Looks back 2 hours for already-running/completed runs. "
+                        "Exits early if no runs found after 5 consecutive empty polls.")
     return p.parse_args()
 
 
 # ?? Utilities ??????????????????????????????????????????????????????????????????
 
+_last_was_progress = False
+
+
 def log(msg: str, level: str = "INFO"):
+    global _last_was_progress
+    if _last_was_progress:
+        print(flush=True)
+        _last_was_progress = False
     ts = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
     print(f"[{ts} UTC] [{level}] {msg}", flush=True)
+
+
+def progress(msg: str):
+    global _last_was_progress
+    ts = datetime.datetime.now(datetime.timezone.utc).strftime("%H:%M:%S")
+    line = f"[{ts} UTC] [INFO] {msg}"
+    if sys.stdout.isatty():
+        try:
+            import shutil as _sh
+            width = _sh.get_terminal_size(fallback=(160, 40)).columns
+        except Exception:
+            width = 160
+        print(f"\r{line[:width-1].ljust(width-1)}", end="", flush=True)
+        _last_was_progress = True
+    else:
+        print(line, flush=True)
+
+
+def progress_done():
+    global _last_was_progress
+    if _last_was_progress:
+        print(flush=True)
+        _last_was_progress = False
 
 
 def utcnow() -> datetime.datetime:
@@ -200,9 +232,16 @@ def local_tz_name() -> str:
         return "unknown"
 
 
-def run_oc(args_list: list, context: str) -> subprocess.CompletedProcess:
-    return subprocess.run(["oc", "--context", context] + args_list,
-                          capture_output=True, text=True)
+def run_oc(args_list: list, context: str,
+           timeout: int = 60) -> subprocess.CompletedProcess:
+    try:
+        return subprocess.run(
+            ["oc", "--context", context] + args_list,
+            capture_output=True, text=True, timeout=timeout,
+        )
+    except subprocess.TimeoutExpired:
+        log(f"oc {' '.join(args_list[:2])} timed out after {timeout}s", "WARN")
+        return subprocess.CompletedProcess(args=[], returncode=1, stdout="", stderr="timeout")
 
 
 def duration_str(seconds) -> str:
@@ -313,24 +352,69 @@ def fetch_pipeline_runs(context, ns_pattern, app_label, since) -> list:
 
 def watch_pipeline_runs(context, ns_pattern, app_label, trigger_time,
                         expected, poll_sec, timeout_sec) -> list:
-    log(f"Watching for {expected} pipeline run(s) - poll every {poll_sec}s "
+    """
+    Poll until all expected runs reach a terminal state.
+
+    GC-resilience: seen_runs cache ensures a run is never dropped once
+    observed, even if Konflux prunes it between polls.
+
+    Early-exit: if no runs have appeared after MAX_EMPTY_POLLS consecutive
+    empty polls we assume GC beat us and bail out rather than waiting for
+    the full timeout.
+    """
+    MAX_EMPTY_POLLS = 5
+    empty_polls = 0
+
+    log(f"Watching for {expected} pipeline run(s) -- poll every {poll_sec}s "
         f"(timeout {timeout_sec // 60}m)")
     start = time.time()
+
+    # key: "<namespace>/<name>"  value: latest pipelinerun dict
+    # Entries are never removed -- survives PAC GC pruning between polls.
+    seen_runs: dict = {}
+
     while True:
         elapsed = int(time.time() - start)
-        runs = fetch_pipeline_runs(context, ns_pattern, app_label, trigger_time)
-        terminal = [r for r in runs if classify_run(r) in TERMINAL_STATES]
+        current = fetch_pipeline_runs(context, ns_pattern, app_label, trigger_time)
+
+        for pr in current:
+            key = f"{pr['metadata']['namespace']}/{pr['metadata']['name']}"
+            seen_runs[key] = pr
+
+        if not seen_runs:
+            empty_polls += 1
+            if empty_polls >= MAX_EMPTY_POLLS:
+                progress_done()
+                log(f"No pipeline runs found after {empty_polls} polls "
+                    f"({empty_polls * poll_sec}s). Runs may have been "
+                    f"GC-ed before collection. Exiting.", "WARN")
+                return []
+        else:
+            empty_polls = 0
+
+        all_runs = list(seen_runs.values())
+        terminal = [r for r in all_runs if classify_run(r) in TERMINAL_STATES]
+        running  = [r for r in all_runs if classify_run(r) not in TERMINAL_STATES]
         succ = sum(1 for r in terminal if classify_run(r) == "Succeeded")
         fail = len(terminal) - succ
-        log(f"Progress: {len(terminal)}/{expected} terminal "
-            f"({succ} succeeded, {fail} failed, {len(runs)-len(terminal)} running) "
-            f"- {elapsed // 60}m{elapsed % 60:02d}s elapsed")
+
+        gc_pruned = len(all_runs) - len(current)
+        gc_note = (f" [{gc_pruned} GC-pruned, held in cache]"
+                   if gc_pruned > 0 else "")
+
+        progress(f"Progress: {len(terminal)}/{expected} terminal "
+                 f"({succ} succeeded, {fail} failed, {len(running)} running)"
+                 f" -- {elapsed // 60}m{elapsed % 60:02d}s elapsed{gc_note}")
+
         if len(terminal) >= expected:
+            progress_done()
             log("All expected pipeline runs reached terminal state.")
-            return runs
+            return all_runs
         if elapsed >= timeout_sec:
-            log(f"Timeout after {timeout_sec}s - extracting partial results.", "WARN")
-            return runs
+            progress_done()
+            log(f"Timeout after {timeout_sec}s -- extracting partial results.", "WARN")
+            return all_runs
+
         time.sleep(poll_sec)
 
 
@@ -657,7 +741,11 @@ def main():
         trigger_time = trigger_builds(args.starts_from, args.ends_to, args.test_scenario)
         run_config["trigger_duration_sec"] = int(time.time() - t0)
     else:
-        log("--skip-trigger: watching for already-triggered pipelines")
+        # Look back 2 hours so any recently-completed or still-running runs
+        # triggered before this invocation are visible to the watcher.
+        trigger_time = utcnow() - datetime.timedelta(hours=2)
+        log(f"--skip-trigger: watching for pipelines triggered since "
+            f"{trigger_time.strftime('%Y-%m-%dT%H:%M:%SZ')} UTC")
 
     # 3. Watch
     runs = watch_pipeline_runs(

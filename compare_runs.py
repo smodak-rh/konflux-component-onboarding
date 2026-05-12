@@ -271,7 +271,7 @@ def build_html(runs: list[dict]) -> str:
                 "failure":   row.get("failure_msg", "")[:120],
             })
 
-    now = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    now = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
 
     chart_data     = json.dumps({
         "labels": labels, "users": users, "batches": batches,
@@ -550,7 +550,7 @@ def main():
     if not args.no_html:
         html     = build_html(runs)
         REPORTS_DIR.mkdir(parents=True, exist_ok=True)
-        ts       = datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+        ts       = datetime.now(timezone.utc).strftime("%Y%m%d_%H%M%S")
         out_path = REPORTS_DIR / f"comparison_{ts}.html"
         out_path.write_text(html, encoding="utf-8")
         print(f"\nHTML report ? {out_path}")

@@ -47,8 +47,10 @@ python3 pipeline_orchestrator.py \
 That one command does everything:
 - Verifies `oc` access before starting
 - Runs `ansible-playbook` to trigger the builds
-- Polls every 30 seconds until all 10 pipeline runs reach terminal state
+- Polls every 15 seconds until all 10 pipeline runs reach terminal state
 - Extracts CSVs and a human-readable summary immediately (before the cluster GCs old runs)
+- GC-resilient: a persistent `seen_runs` cache ensures once a run is observed it is never lost,
+  even if the cluster GC-prunes it between polls (Konflux `max-keep-runs` annotation)
 - Commits and pushes `results/registry_smodak.csv` and the run's CSVs to git
 
 ### 3. Compare results across all contributors
@@ -99,7 +101,7 @@ python3 pipeline_orchestrator.py \
     --starts-from 1 --ends-to 50 \
     --user-id colleague \
     --oc-context default/api-stone-stg-rh01-l2vh-p1-openshiftapps-com:6443/colleague \
-    --poll-interval 60 \
+    --poll-interval 30 \
     --timeout 7200
 ```
 
@@ -201,7 +203,9 @@ ansible-playbook
   (PAC sees PR, triggers PipelineRun)       |
         |                                   |
         +------- pipeline_orchestrator.py --+
-                   polls every 30s
+                   polls every 15s
+                   persistent seen_runs cache
+                   (GC-resilient)
                    until all terminal
                         |
                         v
@@ -360,8 +364,22 @@ Increase it for large batch sizes:
 python3 pipeline_orchestrator.py --starts-from 1 --ends-to 50 --timeout 7200
 ```
 
+### Some pipeline runs are missing from the extracted results
+
+The cluster GCs pipeline runs aggressively via PAC's `max-keep-runs: 3` annotation.
+The orchestrator uses three layers to fight this:
+
+1. **15s poll interval** (default) - faster polling reduces the window in which a
+   completed run can be pruned before the orchestrator sees it.
+2. **Persistent `seen_runs` cache** - once a run is observed it is stored in memory
+   and never dropped, even if the cluster deletes it before the next poll.
+
+If runs are still missing, they were GC'd before the very first poll. Increase
+PAC's `max-keep-runs` annotation in your `.tekton/` YAML to give the orchestrator
+more time, or lower `poll_interval` in your config file.
+
 ### Two contributors' runs appear out of order in the comparison
 
 All runs are sorted by `start_utc`. If a run appears at the wrong position, check that
-the machine's system clock is correct (NTP synced). The orchestrator uses `datetime.utcnow()`
+the machine's system clock is correct (NTP synced). The orchestrator stores all timestamps in UTC
 so local timezone setting does not matter, but an incorrect system clock would affect ordering.
